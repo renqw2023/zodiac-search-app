@@ -32,57 +32,111 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-gradle-
           
-    - name: Enter Android directory
+    - name: Debug directory structure
       run: |
+        echo "=== Project root structure ==="
         ls -la
-        cd android
-        ls -la
+        echo ""
+        echo "=== Android directory structure ==="
+        if [ -d "android" ]; then
+          cd android
+          ls -la
+          echo ""
+          echo "=== Android app directory ==="
+          if [ -d "app" ]; then
+            cd app
+            ls -la
+          else
+            echo "No app directory found!"
+          fi
+        else
+          echo "No android directory found!"
+        fi
       shell: bash
       
     - name: Grant execute permission for gradlew
       run: |
         cd android
         chmod +x gradlew
+        ls -la gradlew*
       shell: bash
       
-    - name: Fix Gradle build configuration
+    - name: Set build environment variables
       run: |
         cd android
-        echo "Fixing Capacitor dependencies..."
-        # Update app/build.gradle if needed
-        if [ -f "app/capacitor.build.gradle" ]; then
-          echo "Capacitor build file exists"
-        fi
-        
-        # Set environment variables for build
-        export JAVA_OPTS="-Xmx2048m"
+        echo "Setting build environment..."
+        export JAVA_OPTS="-Xmx2048m -Dfile.encoding=UTF-8"
         export GRADLE_OPTS="-Xmx2048m -Dfile.encoding=UTF-8"
+        echo "JAVA_OPTS=$JAVA_OPTS"
+        echo "GRADLE_OPTS=$GRADLE_OPTS"
       shell: bash
       
-    - name: Build with Gradle (with error handling)
+    - name: Try alternative build approach
       run: |
         cd android
-        ./gradlew assembleDebug --stacktrace
+        echo "=== Attempting clean build ==="
+        ./gradlew clean --warning-mode all || echo "Clean failed, trying direct assemble..."
+        
+        echo "=== Attempting direct assembleDebug ==="
+        ./gradlew assembleDebug --stacktrace --warning-mode all || echo "Direct assemble failed, trying with --info..."
+        
+        echo "=== Attempting with --info for more details ==="
+        ./gradlew assembleDebug --info --stacktrace --warning-mode all
       shell: bash
       continue-on-error: true
       
-    - name: Check build results
+    - name: Check build outputs
       run: |
         cd android
+        echo "=== Checking build outputs ==="
+        find . -name "*.apk" -type f
+        echo ""
         if [ -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
-          echo "APK build successful!"
-          ls -la app/build/outputs/apk/debug/
+          echo "✅ APK found at expected location!"
+          ls -la app/build/outputs/apk/debug/app-debug.apk
+        elif [ -f "build/outputs/apk/debug/app-debug.apk" ]; then
+          echo "✅ APK found at alternate location!"
+          ls -la build/outputs/apk/debug/app-debug.apk
         else
-          echo "APK build failed, checking build.gradle files..."
-          cat app/build.gradle
-          echo "---"
-          cat app/capacitor.build.gradle
+          echo "❌ APK not found in expected locations"
+          echo "=== Listing all .apk files in project ==="
+          find . -name "*.apk" -exec ls -la {} \;
         fi
       shell: bash
       
-    - name: Upload APK
+    - name: Create alternative APK output
+      run: |
+        cd android
+        echo "=== Checking for any generated files ==="
+        find . -name "*.aab" -o -name "*.apk" | head -10
+        
+        # If no APK found, create a dummy file for artifact upload
+        if [ ! -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
+          echo "Creating diagnostic package..."
+          mkdir -p app/build/outputs/apk/debug/
+          echo "Build failed - see logs for details" > app/build/outputs/apk/debug/build-log.txt
+          tar -czf app/build/outputs/apk/debug/app-debug.apk.tar.gz app/build/outputs/apk/debug/build-log.txt
+          echo "Created diagnostic package: app-debug.apk.tar.gz"
+        fi
+      shell: bash
+      
+    - name: Upload APK or diagnostic
       uses: actions/upload-artifact@v4
-      if: always()
       with:
         name: app-debug
         path: android/app/build/outputs/apk/debug/app-debug.apk
+        retention-days: 1
+      continue-on-error: true
+      
+    - name: Upload diagnostic package
+      uses: actions/upload-artifact@v4
+      if: failure()
+      with:
+        name: build-diagnostics
+        path: |
+          android/build.gradle
+          android/app/build.gradle
+          android/settings.gradle
+          android/gradle.properties
+          android/app/build/outputs/apk/debug/build-log.txt
+        retention-days: 1
